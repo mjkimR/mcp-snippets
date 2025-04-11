@@ -1,8 +1,12 @@
 import uuid
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Optional, AsyncIterator
 
 from langchain_core.embeddings import Embeddings
+from mcp.server import FastMCP
+from mcp.server.fastmcp import Context
 from openai import OpenAI
 from pydantic import BaseModel
 from pymilvus import connections, Collection, FieldSchema, CollectionSchema, DataType, utility
@@ -145,12 +149,12 @@ class MilvusClient:
         self.collection.create_index("created_at", index_name="idx_created_at")
         self.collection.create_index("updated_at", index_name="idx_updated_at")
 
-    def create_board(self, board: BoardCreate):
+    def create_board(self, board: BoardCreate) -> BoardRead:
         self.collection.load()
         data = [BoardData.from_create(board, self.embedding_model).model_dump()]
         self.collection.insert(data=data)
         self.collection.flush()
-        return board
+        return BoardRead.from_dict(data[0])
 
     def search_boards(
             self,
@@ -161,7 +165,7 @@ class MilvusClient:
             updated_after: Optional[datetime] = None,
             updated_before: Optional[datetime] = None,
             limit: int = 10
-    ):
+    ) -> list[BoardRead]:
         self.collection.load()
 
         # 필터 구성
@@ -209,6 +213,68 @@ class MilvusClient:
         return results
 
 
-if __name__ == "__main__":
-    # 예시 사용법
-    milvus_client = MilvusClient(MyEmbeddings(), port="47309", vector_dim=1024)
+@dataclass
+class AppContext:
+    embed: Embeddings
+    vdb: MilvusClient
+
+    @staticmethod
+    def from_context(ctx: Context) -> "AppContext":
+        """Get AppContext from FastMCP context"""
+        return ctx.request_context.lifespan_context
+
+
+@asynccontextmanager
+async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
+    """Manage application lifecycle with type-safe context"""
+    # Initialize on startup
+    embed_model = MyEmbeddings()
+    client = MilvusClient(embed_model, port="47309", vector_dim=1024)
+    try:
+        yield AppContext(embed=embed_model, vdb=client)
+    finally:
+        client.collection.release()
+
+
+mcp = FastMCP("Board Manager", lifespan=app_lifespan)
+
+
+@mcp.tool()
+def create_board(
+        ctx: Context,
+        category: str,
+        title: str,
+        contents: str,
+        owner: str = "admin"
+):
+    """Create a new board"""
+    return AppContext.from_context(ctx).vdb.create_board(BoardCreate(
+        category=category,
+        title=title,
+        contents=contents,
+        owner=owner
+    ))
+
+
+@mcp.tool()
+def search_board(
+        ctx: Context,
+        query: str,
+        category: Optional[str] = None,
+        created_after: Optional[datetime] = None,
+        created_before: Optional[datetime] = None,
+        updated_after: Optional[datetime] = None,
+        updated_before: Optional[datetime] = None,
+        limit: int = 10
+):
+    """Search boards"""
+    result = AppContext.from_context(ctx).vdb.search_boards(
+        query=query,
+        category=category,
+        created_after=created_after,
+        created_before=created_before,
+        updated_after=updated_after,
+        updated_before=updated_before,
+        limit=limit
+    )
+    return result
