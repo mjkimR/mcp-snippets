@@ -3,7 +3,8 @@ from typing import Optional
 from langchain_core.embeddings import Embeddings
 from openai import OpenAI
 
-from logger import trace_error
+from logger import logger
+from src.exceptions import ExternalServiceUnavailableError
 
 
 class LocalEmbedding(Embeddings):
@@ -19,8 +20,8 @@ class LocalEmbedding(Embeddings):
             self.model = model
             self.dimensions = dimensions
         except Exception as e:
-            trace_error()
-            raise Exception(f"Failed to initialize OpenAI client. Check configuration.")
+            logger.error(e, exc_info=True)
+            raise ExternalServiceUnavailableError(f"Failed to initialize OpenAI client. Check configuration.")
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         try:
@@ -28,15 +29,15 @@ class LocalEmbedding(Embeddings):
             datas = self.client.embeddings.create(input=texts, model=self.model).data
             return list(map(lambda data: data.embedding, datas))
         except Exception as e:
-            trace_error()
+            logger.error(e, exc_info=True)
             raise Exception(f"Failed to embed documents.")
 
     def embed_query(self, text: str) -> list[float]:
         try:
             return self.embed_documents([text])[0]
-        except IndexError:
-            trace_error()
+        except IndexError as e:
+            logger.error(e, exc_info=True)
             raise ValueError("No embedding returned for the query.")
         except Exception as e:
-            trace_error()
+            logger.error(e, exc_info=True)
             raise Exception(f"Failed to embed query.")

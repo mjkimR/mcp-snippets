@@ -38,7 +38,7 @@ class BoardRead(BaseModel):
             )
         except (TypeError, ValueError) as e:
             trace_error()
-            raise ValueError(f"Failed to create BoardRead from dict. Check entity data.")
+            raise ValueError(f"Failed to create BoardRead from dict. Check entity data: {e}")
 
 
 class BoardData(BaseModel):
@@ -67,10 +67,10 @@ class BoardData(BaseModel):
             return obj
         except ValidationError as e:
             trace_error()
-            raise ValueError(f"Failed to create BoardData from BoardCreate. Invalid input.")
+            raise ValueError(f"Failed to create BoardData from BoardCreate. Invalid input: {e}")
         except Exception as e:
             trace_error()
-            raise Exception(f"Unexpected error creating BoardData.")
+            raise Exception(f"Unexpected error creating BoardData: {e}")
 
     @staticmethod
     def embedding_content(obj, embed_model):
@@ -79,7 +79,7 @@ class BoardData(BaseModel):
                 f"category: {obj.category} || title: {obj.title} || contents: {obj.contents}")
         except Exception as e:
             trace_error()
-            raise Exception(f"Failed to embed content.")
+            raise Exception(f"Failed to embed content: {e}")
 
     @staticmethod
     def datetime_to_timestamp(dt: datetime) -> int:
@@ -87,4 +87,4 @@ class BoardData(BaseModel):
             return int(dt.timestamp())
         except AttributeError as e:
             trace_error()
-            raise ValueError(f"Invalid datetime object provided.")
+            raise ValueError(f"Invalid datetime object provided: {e}")

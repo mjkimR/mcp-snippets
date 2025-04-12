@@ -12,7 +12,8 @@ from pymilvus import connections, Collection, FieldSchema, CollectionSchema, Dat
 from pymilvus.exceptions import MilvusException
 
 from src.embed_model import LocalEmbedding
-from src.logger import trace_error
+from src.exceptions import NonRetryableError, ExternalServiceUnavailableError
+from src.logger import logger
 from src.schemas import BoardCreate, BoardRead, BoardData
 
 
@@ -35,7 +36,7 @@ class MilvusClient:
             self.connect()
             self.init_collection()
         except Exception as e:
-            trace_error()
+            logger.error(e, exc_info=True)
             raise Exception(f"Failed to initialize Milvus client.")
 
     def _get_vector_dimension(self):
@@ -48,8 +49,8 @@ class MilvusClient:
         try:
             connections.connect("default", host=self.host, port=self.port)
         except Exception as e:
-            trace_error()
-            raise Exception(f"Failed to connect to Milvus server. Check host and port.")
+            logger.error(e, exc_info=True)
+            raise ExternalServiceUnavailableError(f"Failed to connect to Milvus server. Check host and port.")
 
     def release(self):
         try:
@@ -92,10 +93,10 @@ class MilvusClient:
             self.collection.create_index("created_at", index_name="idx_created_at")
             self.collection.create_index("updated_at", index_name="idx_updated_at")
         except MilvusException as e:
-            trace_error()
+            logger.error(e, exc_info=True)
             raise Exception(f"Failed to initialize or create Milvus collection.")
         except Exception as e:
-            trace_error()
+            logger.error(e, exc_info=True)
             raise Exception(f"Unexpected error during Milvus collection initialization.")
 
     def create_board(self, board: BoardCreate) -> BoardRead:
@@ -107,10 +108,10 @@ class MilvusClient:
             self.collection.flush()
             return BoardRead.from_dict(data[0])
         except MilvusException as e:
-            trace_error()
+            logger.error(e, exc_info=True)
             raise Exception(f"Failed to create board in Milvus.")
         except Exception as e:
-            trace_error()
+            logger.error(e, exc_info=True)
             raise Exception(f"Unexpected error creating board.")
 
     def search_boards(
@@ -170,10 +171,10 @@ class MilvusClient:
 
             return results
         except MilvusException as e:
-            trace_error()
+            logger.error(e, exc_info=True)
             raise Exception(f"Failed to search boards in Milvus.")
         except Exception as e:
-            trace_error()
+            logger.error(e, exc_info=True)
             raise Exception(f"Unexpected error during board search.")
 
 
@@ -200,7 +201,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         client = MilvusClient(embed_model)
         yield AppContext(embed=embed_model, vdb=client)
     except Exception as e:
-        trace_error()
+        logger.error(e, exc_info=True)
         raise Exception(f"Error during application lifespan: {e}")
     finally:
         client.release()
@@ -225,11 +226,15 @@ def create_board(
             contents=contents,
             owner=owner
         ))
+    except NonRetryableError as e:
+        error_message = f"[NON-RETRYABLE] {str(e)}"
+        logger.error(error_message, exc_info=True)
+        raise Exception(error_message)
     except ValidationError as e:
-        trace_error()
+        logger.error(e, exc_info=True)
         raise Exception(f"Invalid input for creating board.")
     except Exception as e:
-        trace_error()
+        logger.error(e, exc_info=True)
         raise Exception(f"Failed to create board.")
 
 
@@ -256,6 +261,10 @@ def search_board(
             limit=limit
         )
         return result
+    except NonRetryableError as e:
+        error_message = f"[NON-RETRYABLE] {str(e)}"
+        logger.error(error_message, exc_info=True)
+        raise Exception(error_message)
     except Exception as e:
-        trace_error()
+        logger.error(e, exc_info=True)
         raise Exception(f"Failed to search boards.")
