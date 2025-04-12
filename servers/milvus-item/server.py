@@ -7,128 +7,13 @@ from typing import Optional, AsyncIterator
 from langchain_core.embeddings import Embeddings
 from mcp.server import FastMCP
 from mcp.server.fastmcp import Context
-from openai import OpenAI
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 from pymilvus import connections, Collection, FieldSchema, CollectionSchema, DataType, utility
 from pymilvus.exceptions import MilvusException
 
-from logger import logger, trace_error
-
-
-class BoardCreate(BaseModel):
-    category: str
-    title: str
-    contents: str
-    owner: str
-
-
-class BoardRead(BaseModel):
-    uuid: uuid.UUID
-    category: str
-    title: str
-    contents: str
-    owner: str
-    created_at: datetime
-    updated_at: datetime
-
-    @classmethod
-    def from_dict(cls, entity):
-        try:
-            return cls(
-                uuid=uuid.UUID(entity.get('uuid')),
-                category=entity.get('category'),
-                title=entity.get('title'),
-                contents=entity.get('contents'),
-                owner=entity.get('owner'),
-                created_at=datetime.fromtimestamp(entity.get('created_at')),
-                updated_at=datetime.fromtimestamp(entity.get('updated_at'))
-            )
-        except (TypeError, ValueError) as e:
-            trace_error()
-            raise ValueError(f"Failed to create BoardRead from dict. Check entity data.")
-
-
-class BoardData(BaseModel):
-    uuid: str
-    category: str
-    title: str
-    contents: str
-    owner: str
-    created_at: int
-    updated_at: int
-    embedding: Optional[list[float]] = None
-
-    @classmethod
-    def from_create(cls, board_create: BoardCreate, embed_model: Embeddings):
-        try:
-            obj = cls(
-                uuid=str(uuid.uuid4()),
-                category=board_create.category,
-                title=board_create.title,
-                contents=board_create.contents,
-                owner=board_create.owner,
-                created_at=cls.datetime_to_timestamp(datetime.now()),
-                updated_at=cls.datetime_to_timestamp(datetime.now()),
-            )
-            obj.embedding = cls.embedding_content(obj, embed_model)
-            return obj
-        except ValidationError as e:
-            trace_error()
-            raise ValueError(f"Failed to create BoardData from BoardCreate. Invalid input.")
-        except Exception as e:
-            trace_error()
-            raise Exception(f"Unexpected error creating BoardData.")
-
-    @staticmethod
-    def embedding_content(obj, embed_model):
-        try:
-            return embed_model.embed_query(
-                f"category: {obj.category} || title: {obj.title} || contents: {obj.contents}")
-        except Exception as e:
-            trace_error()
-            raise Exception(f"Failed to embed content.")
-
-    @staticmethod
-    def datetime_to_timestamp(dt: datetime) -> int:
-        try:
-            return int(dt.timestamp())
-        except AttributeError as e:
-            trace_error()
-            raise ValueError(f"Invalid datetime object provided.")
-
-
-class LocalEmbedding(Embeddings):
-    def __init__(
-            self,
-            base_url="http://localhost:1234/v1",
-            model="text-embedding-multilingual-e5-large-instruct",
-            api_key="lm-studio"
-    ):
-        try:
-            self.client = OpenAI(base_url=base_url, api_key=api_key)
-            self.model = model
-        except Exception as e:
-            trace_error()
-            raise Exception(f"Failed to initialize OpenAI client. Check configuration.")
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        try:
-            texts = list(map(lambda text: text.replace("\n", " "), texts))
-            datas = self.client.embeddings.create(input=texts, model=self.model).data
-            return list(map(lambda data: data.embedding, datas))
-        except Exception as e:
-            trace_error()
-            raise Exception(f"Failed to embed documents.")
-
-    def embed_query(self, text: str) -> list[float]:
-        try:
-            return self.embed_documents([text])[0]
-        except IndexError:
-            trace_error()
-            raise ValueError("No embedding returned for the query.")
-        except Exception as e:
-            trace_error()
-            raise Exception(f"Failed to embed query.")
+from src.embed_model import LocalEmbedding
+from src.logger import trace_error
+from src.schemas import BoardCreate, BoardRead, BoardData
 
 
 class MilvusClient:
@@ -136,14 +21,13 @@ class MilvusClient:
             self,
             embedding_model: Embeddings,
             host="localhost", port="19530",
-            vector_dim: int | None = None,
             collection_name: str = "board_collection",
             collection_description: str = "Board collection",
     ):
         self.host = host
         self.port = port
         self.embedding_model = embedding_model
-        self.vector_dim = vector_dim
+        self.vector_dim = self._get_vector_dimension()
         self.collection_name = collection_name
         self.collection_description = collection_description
         self.collection = None
@@ -153,6 +37,12 @@ class MilvusClient:
         except Exception as e:
             trace_error()
             raise Exception(f"Failed to initialize Milvus client.")
+
+    def _get_vector_dimension(self):
+        if hasattr(self.embedding_model, "dimensions"):
+            return self.embedding_model.dimensions
+        else:
+            return len(self.embedding_model.embed_query("test"))
 
     def connect(self):
         try:
@@ -303,8 +193,11 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     """Manage application lifecycle with type-safe context"""
     client = None
     try:
-        embed_model = LocalEmbedding()
-        client = MilvusClient(embed_model, vector_dim=1024)
+        embed_model = LocalEmbedding(
+            model="text-embedding-multilingual-e5-large-instruct",
+            dimensions=1024,
+        )
+        client = MilvusClient(embed_model)
         yield AppContext(embed=embed_model, vdb=client)
     except Exception as e:
         trace_error()
